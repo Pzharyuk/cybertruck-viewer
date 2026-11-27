@@ -22,7 +22,8 @@
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     background: radial-gradient(ellipse at 50% 38%, #e7e8ee 0%, #c5c8d0 42%, #8e939c 100%);
   }
-  #c { width: 100%; height: 100%; display: block; touch-action: none; }
+  #c { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  #c.pointing { cursor: pointer; }
   #err {
     display: none; position: absolute; left: 16px; right: 16px; top: 16px;
     padding: 12px 14px; background: #3a1212; color: #ffd7d7; border-radius: 10px;
@@ -58,20 +59,12 @@
     box-shadow: inset 0 0 0 2px rgba(255,255,255,0.7), 0 2px 6px rgba(0,0,0,0.25);
   }
   button.swatch.on { box-shadow: inset 0 0 0 3px #fff, 0 0 0 2px #111; }
-  #hotspots { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
-  button.hot {
-    position: absolute; pointer-events: auto; transform: translate(-50%, -50%);
-    min-height: 36px; padding: 6px 10px; border-radius: 999px; border: 0;
-    background: rgba(20,22,26,0.72); color: white; font-size: 12px; font-weight: 600;
-    letter-spacing: 0.02em;
-  }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="err"></div>
 <div id="top"><b>CYBERTRUCK</b><div id="status">Loading</div></div>
-<div id="hotspots"></div>
 <div id="bar">
   <button class="act" id="openAll" type="button">Open all</button>
   <button class="act" id="closeAll" type="button">Close all</button>
@@ -349,57 +342,70 @@ loader.parse(raw.buffer, '', (gltf) => {
   controls.target.copy(homeTgt);
   controls.update();
   paintWrap(WRAPS[0]);
-  buildHotspots();
   statusEl.textContent = 'Stainless';
   console.log('cybertruck nodes', parts.map((p) => p.name).join(', '));
 }, fail);
 
-const LABELS = {
-  Door_FL: 'Front left', Door_FR: 'Front right', Door_RL: 'Rear left', Door_RR: 'Rear right',
-  Frunk: 'Frunk', Tonneau: 'Tonneau', Tailgate: 'Tailgate',
-};
-function buildHotspots() {
-  const root = document.getElementById('hotspots');
-  for (const p of parts) {
-    if (p.motion !== 'rotate' && p.motion !== 'translate') continue;
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'hot';
-    b.textContent = LABELS[p.name] || p.name;
-    b.onclick = (e) => { e.stopPropagation(); toggle(p.name); };
-    root.appendChild(b);
-    p.btn = b;
-  }
-}
-
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
-let downX = 0, downY = 0, down = false;
-canvas.addEventListener('pointerdown', (e) => { down = true; downX = e.clientX; downY = e.clientY; });
-canvas.addEventListener('pointerup', (e) => {
-  if (!down) return;
-  down = false;
-  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 8) return;
+const TAP_MOVE_PX = 10;
+
+function hitPart(clientX, clientY) {
   const rect = canvas.getBoundingClientRect();
-  pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  if (rect.width < 1 || rect.height < 1) return null;
+  pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
   const hits = raycaster.intersectObjects(scene.children, true);
   for (const h of hits) {
     if (h.object === ground) continue;
     let o = h.object;
     while (o) {
-      if (byName[o.name] && (byName[o.name].motion === 'rotate' || byName[o.name].motion === 'translate')) {
-        toggle(o.name);
-        return;
-      }
+      const p = byName[o.name];
+      if (p && (p.motion === 'rotate' || p.motion === 'translate')) return p;
       o = o.parent;
     }
   }
+  return null;
+}
+
+function setHoverCursor(clientX, clientY) {
+  canvas.classList.toggle('pointing', !!hitPart(clientX, clientY));
+}
+
+let downId = null, downX = 0, downY = 0, dragged = false;
+canvas.addEventListener('pointerdown', (e) => {
+  downId = e.pointerId;
+  downX = e.clientX;
+  downY = e.clientY;
+  dragged = false;
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* older browsers */ }
 });
+canvas.addEventListener('pointermove', (e) => {
+  if (downId === e.pointerId) {
+    if (Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE_PX) dragged = true;
+    return;
+  }
+  if (e.pointerType === 'mouse' && downId === null) setHoverCursor(e.clientX, e.clientY);
+});
+function endPointer(e) {
+  if (downId !== e.pointerId) return;
+  const wasDrag = dragged || Math.hypot(e.clientX - downX, e.clientY - downY) > TAP_MOVE_PX;
+  downId = null;
+  dragged = false;
+  try { if (canvas.hasPointerCapture?.(e.pointerId)) canvas.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+  if (e.type !== 'pointerup' || wasDrag) {
+    if (e.pointerType === 'mouse') canvas.classList.remove('pointing');
+    return;
+  }
+  const p = hitPart(e.clientX, e.clientY);
+  if (p) toggle(p.name);
+  if (e.pointerType === 'mouse') setHoverCursor(e.clientX, e.clientY);
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
 
 const clock = new THREE.Clock();
-const proj = new THREE.Vector3();
 function tick() {
   const dt = Math.min(clock.getDelta(), 0.05);
   const speed = 1 / 0.7;
@@ -412,17 +418,6 @@ function tick() {
       p.node.quaternion.multiply(new THREE.Quaternion().setFromAxisAngle(p.axis, p.angle * e));
     } else if (p.motion === 'translate') {
       p.node.position.copy(p.closedPos).addScaledVector(p.offset, e);
-    }
-    if (p.btn) {
-      const box = new THREE.Box3().setFromObject(p.node);
-      const c = box.getCenter(proj);
-      c.project(camera);
-      const visible = c.z < 1;
-      p.btn.style.display = visible ? 'block' : 'none';
-      if (visible) {
-        p.btn.style.left = (c.x * 0.5 + 0.5) * window.innerWidth + 'px';
-        p.btn.style.top = (-c.y * 0.5 + 0.5) * window.innerHeight + 'px';
-      }
     }
   }
   if (glide.active) {
@@ -459,6 +454,26 @@ document.addEventListener('touchmove', (e) => { if (e.target === canvas) e.preve
 window.__ct = {
   toggle, setAll, paintWrap, wraps: WRAPS,
   parts: () => parts.map((p) => ({ name: p.name, t: p.t, target: p.target, motion: p.motion })),
+  hit: (x, y) => hitPart(x, y)?.name || null,
+  screenOf: (name) => {
+    const p = byName[name];
+    if (!p) return null;
+    const w = window.innerWidth, h = window.innerHeight;
+    const pad = 16;
+    const bottom = 160; // keep clear of the control bar
+    for (let y = pad; y < h - bottom; y += 6) {
+      for (let x = pad; x < w - pad; x += 6) {
+        if (hitPart(x, y) === p) return { x, y, visible: true };
+      }
+    }
+    const c = new THREE.Box3().setFromObject(p.node).getCenter(new THREE.Vector3());
+    c.project(camera);
+    return {
+      x: (c.x * 0.5 + 0.5) * w,
+      y: (-c.y * 0.5 + 0.5) * h,
+      visible: false,
+    };
+  },
 };
 </script>
 </body>
